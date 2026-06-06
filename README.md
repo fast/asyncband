@@ -48,6 +48,7 @@ The crate enables no primitives by default. Categories describe each primitive's
 |                         | [`mpsc::bounded`](https://docs.rs/asyncband/*/asyncband/mpsc/fn.bounded.html)        | `mpsc`         | Send values from multiple producers through a bounded channel.          |
 |                         | [`mpsc::unbounded`](https://docs.rs/asyncband/*/asyncband/mpsc/fn.unbounded.html)    | `mpsc`         | Send values from multiple producers through an unbounded channel.       |
 |                         | [`broadcast::overflow`](https://docs.rs/asyncband/*/asyncband/broadcast/overflow/)   | `broadcast`    | Broadcast values and report when slow receivers miss overwritten items. |
+|                         | [`broadcast::unbounded`](https://docs.rs/asyncband/*/asyncband/broadcast/unbounded/) | `broadcast`    | Broadcast values and retain them until every active receiver consumes them. |
 | Workload control        | [`Semaphore`](https://docs.rs/asyncband/*/asyncband/semaphore/struct.Semaphore.html) | `semaphore`    | Control concurrent access with permits.                                 |
 |                         | [`Group`](https://docs.rs/asyncband/*/asyncband/singleflight/struct.Group.html)      | `singleflight` | Coalesce concurrent calls for the same key.                             |
 

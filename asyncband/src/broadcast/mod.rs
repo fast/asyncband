@@ -20,5 +20,7 @@
 //! This module provides broadcast channels in one of the following policies:
 //!
 //! * [`overflow`]: when the channel is full, the oldest messages are overwritten.
+//! * [`unbounded`]: messages are retained until every active receiver consumes them or is dropped.
 
 pub mod overflow;
+pub mod unbounded;
