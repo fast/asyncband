@@ -72,6 +72,7 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
+use std::task::Waker;
 
 use crate::internal::mutex::Mutex;
 use crate::internal::rwlock::RwLock;
@@ -117,9 +118,11 @@ pub fn channel<T: Clone>(capacity: usize) -> (Sender<T>, Receiver<T>) {
         buffer: buffer.into_boxed_slice(),
         capacity,
         mask,
-        tail_cnt: AtomicU64::new(0),
+        tail: AtomicU64::new(0),
+        state: Mutex::new(State {
+            waiters: WaitSet::new(),
+        }),
         senders: AtomicUsize::new(1),
-        waiters: Mutex::new(WaitSet::new()),
     });
     let sender = Sender {
         shared: shared.clone(),
@@ -190,25 +193,22 @@ struct Shared<T> {
     buffer: Box<[RwLock<Slot<T>>]>,
     capacity: usize,
     mask: usize,
-    /// The global tail cursor. Points to the next slot to write.
-    /// Strictly monotonically increasing.
-    tail_cnt: AtomicU64,
+    /// The next sequence after the contiguous prefix of fully published slots.
+    tail: AtomicU64,
+    /// Serializes senders and makes publishing atomic with draining or registering waiters.
+    state: Mutex<State>,
     /// Number of active senders.
     senders: AtomicUsize,
-    /// Waiters (receivers) waiting for new messages.
-    waiters: Mutex<WaitSet>,
 }
 
-impl<T> Shared<T> {
-    fn wake_waiters(&self) {
-        let wakers = {
-            let mut waiters = self.waiters.lock();
-            waiters.take_wakers()
-        };
+struct State {
+    /// Receivers waiting for a new message.
+    waiters: WaitSet,
+}
 
-        for waker in wakers {
-            waker.wake();
-        }
+fn wake_waiters(wakers: impl IntoIterator<Item = Waker>) {
+    for waker in wakers {
+        waker.wake();
     }
 }
 
@@ -235,7 +235,8 @@ impl<T> Drop for Sender<T> {
             1 => {
                 // If this is the last sender, we need to wake up the receiver so it can
                 // observe the disconnected state.
-                self.shared.wake_waiters();
+                let wakers = self.shared.state.lock().waiters.take_wakers();
+                wake_waiters(wakers);
             }
             _ => {
                 // there are still other senders left, do nothing
@@ -261,17 +262,28 @@ impl<T> Sender<T> {
     /// assert_eq!(rx.try_recv(), Ok(10));
     /// ```
     pub fn send(&self, msg: T) {
-        let tail = self.shared.tail_cnt.fetch_add(1, Ordering::SeqCst);
-        let idx = (tail as usize) & self.shared.mask;
+        let wakers = {
+            let mut state = self.shared.state.lock();
+            let tail = self.shared.tail.load(Ordering::Relaxed);
+            let idx = (tail as usize) & self.shared.mask;
 
-        {
             let mut slot = self.shared.buffer[idx].write();
             slot.msg = Some(msg);
             slot.version = tail;
-        }
+
+            // Publish the completed slot before releasing its write lock. A receiver that sees the
+            // new tail either held the old slot lock first or waits until the new value is
+            // complete.
+            self.shared
+                .tail
+                .store(tail.wrapping_add(1), Ordering::Release);
+            drop(slot);
+
+            state.waiters.take_wakers()
+        };
 
         // Notify all waiting receivers.
-        self.shared.wake_waiters();
+        wake_waiters(wakers);
     }
 
     /// Creates a new receiver that starts receiving messages from the current tail of the channel.
@@ -295,7 +307,7 @@ impl<T> Sender<T> {
     /// ```
     pub fn subscribe(&self) -> Receiver<T> {
         // Receiver starts at the current tail.
-        let head = self.shared.tail_cnt.load(Ordering::SeqCst);
+        let head = self.shared.tail.load(Ordering::Acquire);
         let shared = self.shared.clone();
         Receiver { shared, head }
     }
@@ -375,49 +387,63 @@ impl<T: Clone> Receiver<T> {
         let shared = &self.shared;
         let cap = shared.capacity as u64;
 
-        let tail = shared.tail_cnt.load(Ordering::SeqCst);
-        let head = self.head;
+        loop {
+            let tail = shared.tail.load(Ordering::Acquire);
+            let head = self.head;
 
-        // diff represents how far behind the head is from the tail.
-        let diff = tail.wrapping_sub(head);
+            // diff represents how far behind the head is from the tail.
+            let diff = tail.wrapping_sub(head);
 
-        // 1. Check for Lag
-        if diff > cap {
-            let missed = diff - cap;
-            self.head = tail.wrapping_sub(cap);
-            return Err(TryRecvError::Lagged(missed));
-        }
-
-        // 2. Check if a message is available
-        if diff > 0 {
-            let idx = (head as usize) & shared.mask;
-            let slot = shared.buffer[idx].read();
-
-            if slot.version == head {
-                return if let Some(msg) = &slot.msg {
-                    self.head = head.wrapping_add(1);
-                    Ok(msg.clone())
-                } else {
-                    Err(TryRecvError::Empty)
-                };
+            // 1. Check for Lag
+            if diff > cap {
+                let missed = diff - cap;
+                self.head = tail.wrapping_sub(cap);
+                return Err(TryRecvError::Lagged(missed));
             }
 
-            drop(slot);
+            // 2. Check if a message is available
+            if diff > 0 {
+                let idx = (head as usize) & shared.mask;
+                let slot = shared.buffer[idx].read();
 
-            // If version != head, the slot was overwritten.
-            // This means we lagged, but the `diff > cap` check missed it (likely due to overflow
-            // wrapping). We treat this as a lag.
-            let missed = tail.wrapping_sub(self.head).wrapping_sub(cap);
-            self.head = tail.wrapping_sub(cap);
-            return Err(TryRecvError::Lagged(missed));
+                if slot.version == head {
+                    return if let Some(msg) = &slot.msg {
+                        self.head = head.wrapping_add(1);
+                        Ok(msg.clone())
+                    } else {
+                        Err(TryRecvError::Empty)
+                    };
+                }
+
+                drop(slot);
+
+                // The slot may have been overwritten after the first tail snapshot. Publication
+                // happens while holding the slot write lock, so a fresh tail now includes that
+                // overwrite and produces an accurate lag count.
+                let tail = shared.tail.load(Ordering::Acquire);
+                let diff = tail.wrapping_sub(head);
+                if diff > cap {
+                    let missed = diff - cap;
+                    self.head = tail.wrapping_sub(cap);
+                    return Err(TryRecvError::Lagged(missed));
+                }
+
+                return Err(TryRecvError::Empty);
+            }
+
+            // 3. No message available (diff == 0). Check for Closed.
+            if shared.senders.load(Ordering::Acquire) == 0 {
+                // Observing the final sender drop synchronizes with all preceding sends, but the
+                // first tail snapshot predates that acquire. Reload it before declaring the
+                // channel drained so a published final message cannot be hidden by closure.
+                if shared.tail.load(Ordering::Acquire) != head {
+                    continue;
+                }
+                return Err(TryRecvError::Disconnected);
+            }
+
+            return Err(TryRecvError::Empty);
         }
-
-        // 3. No message available (diff == 0). Check for Closed.
-        if shared.senders.load(Ordering::Acquire) == 0 {
-            return Err(TryRecvError::Disconnected);
-        }
-
-        Err(TryRecvError::Empty)
     }
 }
 
@@ -444,7 +470,7 @@ impl<T> Receiver<T> {
     /// ```
     pub fn resubscribe(&self) -> Self {
         // Resubscribe starts at the current tail.
-        let head = self.shared.tail_cnt.load(Ordering::SeqCst);
+        let head = self.shared.tail.load(Ordering::Acquire);
         let shared = self.shared.clone();
         Self { shared, head }
     }
@@ -484,13 +510,12 @@ impl<T: Clone> Future for Recv<'_, T> {
             }
 
             let shared = &receiver.shared;
-            let mut waiters = shared.waiters.lock();
+            let mut state = shared.state.lock();
 
             // Double check tail to avoid race conditions.
-            let tail_now = shared.tail_cnt.load(Ordering::SeqCst);
-            if tail_now != receiver.head {
+            if shared.tail.load(Ordering::Acquire) != receiver.head {
                 // New message arrived while acquiring the lock. Retry.
-                drop(waiters);
+                drop(state);
                 continue;
             }
 
@@ -502,8 +527,8 @@ impl<T: Clone> Future for Recv<'_, T> {
             }
 
             // Register Waker
-            let replaced_waker = waiters.register_waker(registration, cx);
-            drop(waiters);
+            let replaced_waker = state.waiters.register_waker(registration, cx);
+            drop(state);
             drop(replaced_waker);
             return Poll::Pending;
         }
@@ -514,8 +539,8 @@ impl<T> Drop for Recv<'_, T> {
     fn drop(&mut self) {
         if self.registration.is_some() {
             let removed_waker = {
-                let mut waiters = self.receiver.shared.waiters.lock();
-                waiters.unregister_waker(&mut self.registration)
+                let mut state = self.receiver.shared.state.lock();
+                state.waiters.unregister_waker(&mut self.registration)
             };
             drop(removed_waker);
         }
