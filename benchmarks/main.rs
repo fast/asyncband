@@ -18,6 +18,7 @@
 mod barrier;
 mod blocking;
 mod broadcast;
+mod broadcast_unbounded;
 mod condvar;
 mod latch;
 mod mpsc;

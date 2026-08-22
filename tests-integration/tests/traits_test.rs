@@ -64,6 +64,10 @@ fn public_types_are_send_and_sync() {
     assert_send_and_sync::<broadcast::overflow::Receiver<i64>>();
     assert_send_and_sync::<broadcast::overflow::RecvError>();
     assert_send_and_sync::<broadcast::overflow::TryRecvError>();
+    assert_send_and_sync::<broadcast::unbounded::Sender<i64>>();
+    assert_send_and_sync::<broadcast::unbounded::Receiver<i64>>();
+    assert_send_and_sync::<broadcast::unbounded::RecvError>();
+    assert_send_and_sync::<broadcast::unbounded::TryRecvError>();
     assert_send_and_sync::<oneshot::SendError<i64>>();
     assert_send_and_sync::<oneshot::Sender<i64>>();
     assert_send_and_sync::<mpsc::SendError<i64>>();
@@ -108,6 +112,10 @@ fn public_types_are_unpin() {
     assert_unpin::<broadcast::overflow::Receiver<i64>>();
     assert_unpin::<broadcast::overflow::RecvError>();
     assert_unpin::<broadcast::overflow::TryRecvError>();
+    assert_unpin::<broadcast::unbounded::Sender<i64>>();
+    assert_unpin::<broadcast::unbounded::Receiver<i64>>();
+    assert_unpin::<broadcast::unbounded::RecvError>();
+    assert_unpin::<broadcast::unbounded::TryRecvError>();
     assert_unpin::<oneshot::Sender<i64>>();
     assert_unpin::<oneshot::SendError<i64>>();
     assert_unpin::<oneshot::Receiver<i64>>();
