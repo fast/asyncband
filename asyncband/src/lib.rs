@@ -51,14 +51,14 @@
 //!
 //! # API guide
 //!
-//! | Use case                   | APIs                                                                                  | Cargo features                              |
-//! | -------------------------- | ------------------------------------------------------------------------------------- | ------------------------------------------- |
-//! | Protect shared state       | [`mutex::Mutex`], [`rwlock::RwLock`], [`condvar::Condvar`]                            | `mutex`, `rwlock`, `condvar`                |
-//! | Initialize values once     | [`once::Once`], [`once::OnceCell`], [`once::OnceMap`]                                 | `once`, `once-cell`, `once-map`             |
-//! | Coordinate tasks           | [`barrier::Barrier`], [`latch::Latch`], [`waitgroup::WaitGroup`], [`shutdown`]        | `barrier`, `latch`, `waitgroup`, `shutdown` |
+//! | Use case                   | APIs                                                                                                            | Cargo features                              |
+//! | -------------------------- | --------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
+//! | Protect shared state       | [`mutex::Mutex`], [`rwlock::RwLock`], [`condvar::Condvar`]                                                      | `mutex`, `rwlock`, `condvar`                |
+//! | Initialize values once     | [`once::Once`], [`once::OnceCell`], [`once::OnceMap`]                                                           | `once`, `once-cell`, `once-map`             |
+//! | Coordinate tasks           | [`barrier::Barrier`], [`latch::Latch`], [`waitgroup::WaitGroup`], [`shutdown`]                                  | `barrier`, `latch`, `waitgroup`, `shutdown` |
 //! | Send values                | [`oneshot::channel`], [`mpsc::bounded`], [`mpsc::unbounded`], [`broadcast::overflow`], [`broadcast::unbounded`] | `oneshot`, `mpsc`, `broadcast`              |
-//! | Control workloads          | [`semaphore::Semaphore`], [`singleflight::Group`]                                     | `semaphore`, `singleflight`                 |
-//! | Wait from synchronous code | [`blocking::FutureExt`]                                                               | `blocking`                                  |
+//! | Control workloads          | [`semaphore::Semaphore`], [`singleflight::Group`]                                                               | `semaphore`, `singleflight`                 |
+//! | Wait from synchronous code | [`blocking::FutureExt`]                                                                                         | `blocking`                                  |
 //!
 //! # Runtime and blocking model
 //!
